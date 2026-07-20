@@ -25,6 +25,13 @@ export const knowledgeApi = {
     apiClient.get(
       `/api/knowledge/consolidation/history?model=${model}&limit=${limit}`,
     ),
+  // Conflict Detection & Resolution
+  getConflicts: (status = "pending") =>
+    apiClient.get(`/api/knowledge/conflicts?status=${status}`),
+  scanConflicts: () =>
+    apiClient.post(`/api/knowledge/conflicts/scan`),
+  resolveConflict: (id, data) =>
+    apiClient.post(`/api/knowledge/conflicts/${id}/resolve`, data),
   // Memory Graph Snapshot & Time-Travel
   getGraphSnapshots: ({ limit = 50, before } = {}) =>
     apiClient.get(

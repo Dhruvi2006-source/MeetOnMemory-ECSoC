@@ -4,6 +4,7 @@ import { embedText } from "../utils/embeddingUtils.js";
 import { calculateRelationshipConfidence } from "../utils/relationshipScoring.js";
 import { applyImportanceScore } from "./importanceScoringService.js";
 import { cosineSimilarity } from "../utils/similarity.js";
+import { runFullConflictScan } from "./conflictDetectionService.js";
 
 const SIMILARITY_THRESHOLD = 0.85;
 const CONFIDENCE_THRESHOLD = 70; // conservative, per issue's technical considerations
@@ -179,6 +180,13 @@ export async function processStructuredMoM(meeting, mom) {
 
     await applyImportanceScore(actionItem);
     results.actionItems.push(actionItem);
+  }
+
+  // Fire-and-forget background conflict scanning for newly added memories
+  if (organization) {
+    runFullConflictScan(organization).catch((err) => {
+      console.error("⚠️ Background conflict scan failed:", err.message);
+    });
   }
 
   return results;

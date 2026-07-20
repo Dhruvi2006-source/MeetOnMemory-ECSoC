@@ -53,10 +53,10 @@ export async function buildGraph(organization) {
 
   const [decisions, actionItems] = await Promise.all([
     Decision.find(orgFilter).select(
-      "text owner status sourceMeetingId relatesTo createdAt embedding organization accessCount lastAccessedAt feedbackScore feedbackCount",
+      "text owner status supersededByMemory sourceMeetingId relatesTo createdAt embedding organization accessCount lastAccessedAt feedbackScore feedbackCount",
     ),
     ActionItem.find(orgFilter).select(
-      "text owner status sourceMeetingId relatesTo createdAt embedding organization accessCount lastAccessedAt feedbackScore feedbackCount",
+      "text owner status supersededByMemory sourceMeetingId relatesTo createdAt embedding organization accessCount lastAccessedAt feedbackScore feedbackCount",
     ),
   ]);
 
@@ -84,6 +84,7 @@ export async function buildGraph(organization) {
       text: decision.text,
       owner: decision.owner,
       status: decision.status,
+      supersededByMemory: decision.supersededByMemory?.toString() || null,
       sourceMeetingId: decision.sourceMeetingId?.toString() || null,
       createdAt: decision.createdAt,
       embedding: decision.embedding,
@@ -118,6 +119,7 @@ export async function buildGraph(organization) {
       text: item.text,
       owner: item.owner,
       status: item.status,
+      supersededByMemory: item.supersededByMemory?.toString() || null,
       sourceMeetingId: item.sourceMeetingId?.toString() || null,
       createdAt: item.createdAt,
       embedding: item.embedding,
@@ -187,6 +189,9 @@ export function expandFromSeeds(graph, seedKeys, options = {}) {
         if (weight < minEdgeWeight) continue;
         if (seedSet.has(neighborKey)) continue; // don't re-surface a seed as a "discovery"
         if (path.includes(neighborKey)) continue; // avoid cycles within a single path
+
+        const neighborNode = nodes.get(neighborKey);
+        if (neighborNode?.status === "superseded" || neighborNode?.supersededByMemory) continue;
 
         const edgeStrength = Math.max(0, Math.min(100, weight)) / 100;
         const candidateScore = score * edgeStrength * decay;

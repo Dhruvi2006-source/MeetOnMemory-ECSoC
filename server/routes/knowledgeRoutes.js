@@ -21,6 +21,11 @@ import {
   getSnapshotDiff,
   createManualSnapshot,
 } from "../controllers/graphSnapshotController.js";
+import {
+  getConflicts,
+  scanConflicts,
+  resolveConflict,
+} from "../controllers/conflictController.js";
 
 const router = express.Router();
 router.use(apiLimiter);
@@ -115,6 +120,28 @@ router.get(
   requireOrgMembership,
   requirePermission("knowledge", "view"),
   getConsolidationHistory,
+);
+
+// --- AI-Powered Contradiction Detection & Conflict Resolution ---
+router.get(
+  "/conflicts",
+  requireOrgMembership,
+  requirePermission("knowledge", "view"),
+  getConflicts,
+);
+router.post(
+  "/conflicts/scan",
+  writeLimiter,
+  requireOrgMembership,
+  requirePermission("knowledge", "edit"),
+  scanConflicts,
+);
+router.post(
+  "/conflicts/:id/resolve",
+  writeLimiter,
+  requireOrgMembership,
+  requirePermission("knowledge", "edit"),
+  resolveConflict,
 );
 
 export default router;

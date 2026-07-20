@@ -17,6 +17,7 @@
 // ==============================================
 
 import Meeting from "../models/meetingModel.js";
+import Conflict from "../models/conflictModel.js";
 import { embedText, searchVectorStore } from "../utils/embeddingUtils.js";
 import { cosineSimilarity } from "../utils/similarity.js";
 import { buildExplanation } from "../utils/explanationBuilder.js";
@@ -173,6 +174,7 @@ async function runSemanticSearch(query, organization, graph, options) {
       )
         continue;
       if (!node.embedding?.length) continue;
+      if (node.status === "superseded" || node.supersededByMemory) continue;
 
       const score = cosineSimilarity(queryEmbedding, node.embedding);
       if (score <= 0) continue;
@@ -328,7 +330,7 @@ function attachExplanations(rankedResults, graph, organization) {
     if (result.type === NODE_TYPES.DECISION) decisionIds.push(result.id);
     if (result.type === NODE_TYPES.ACTION_ITEM) actionItemIds.push(result.id);
 
-    const explanation = buildExplanation({
+    let explanation = buildExplanation({
       type: result.type,
       semanticScore: result.semanticScore || 0,
       graphScore: result.graphScore || 0,
@@ -337,6 +339,10 @@ function attachExplanations(rankedResults, graph, organization) {
       memory: node,
       organization,
     });
+
+    if (result.hasConflict) {
+      explanation = `⚠️ Warning: This memory is currently flagged in a pending contradiction conflict.\n\n${explanation}`;
+    }
 
     return { ...result, rank: index + 1, explanation };
   });
@@ -394,7 +400,40 @@ export async function hybridRetrieve(query, organization, rawOptions = {}) {
       : [];
 
   const fused = fuseResults(semanticResults, graphExpansions, options);
-  const topResults = fused.slice(0, options.topK);
+
+  // Apply active conflict penalties
+  let penalizedFused = fused;
+  if (organization) {
+    try {
+      const activeConflicts = await Conflict.find({ organization, status: "pending" }).lean();
+      const conflictingMemoryIds = new Set();
+      for (const conflict of activeConflicts) {
+        for (const m of conflict.memories) {
+          conflictingMemoryIds.add(m.memoryId.toString());
+        }
+      }
+
+      if (conflictingMemoryIds.size > 0) {
+        penalizedFused = fused.map(item => {
+          if (conflictingMemoryIds.has(item.id)) {
+            return {
+              ...item,
+              finalScore: item.finalScore * 0.5, // 50% penalty for reliability
+              hasConflict: true,
+            };
+          }
+          return item;
+        });
+
+        // Re-sort because scores changed!
+        penalizedFused.sort((a, b) => b.finalScore - a.finalScore);
+      }
+    } catch (err) {
+      console.warn("⚠️ Failed to load conflicts during hybrid retrieve:", err.message);
+    }
+  }
+
+  const topResults = penalizedFused.slice(0, options.topK);
   const enriched = await enrichWithMeetingContext(topResults, graph);
   const explained = attachExplanations(enriched, graph, organization);
 

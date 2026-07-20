@@ -21,6 +21,7 @@ import {
   ChevronDown,
   ExternalLink,
   GitMerge,
+  AlertTriangle,
 } from "lucide-react";
 
 /**
@@ -273,13 +274,22 @@ const Tasks = () => {
               Track and manage action items from your meeting summaries
             </p>
           </div>
-          <button
-            onClick={() => navigate("/knowledge/consolidate")}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"
-          >
-            <GitMerge className="w-4 h-4" />
-            Consolidate memories
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => navigate("/knowledge/conflicts")}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"
+            >
+              <AlertTriangle className="w-4 h-4 text-red-500" />
+              Resolve conflicts
+            </button>
+            <button
+              onClick={() => navigate("/knowledge/consolidate")}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"
+            >
+              <GitMerge className="w-4 h-4" />
+              Consolidate memories
+            </button>
+          </div>
         </div>
 
         {/* Search and Filters */}
