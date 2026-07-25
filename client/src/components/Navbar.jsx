@@ -36,6 +36,7 @@ import {
   Plus,
   Compass,
   Check,
+  MessageSquare,
 } from "lucide-react";
 
 const NAV_LINK_KEYS = [
@@ -142,10 +143,10 @@ const Navbar = () => {
 
       const fetchRecentNotifications = async () => {
         try {
-          const { data } = await notificationApi.getNotifications();
+          const { data } = await notificationApi.getNotifications({ limit: 5 });
           if (data.success) {
             setNotifications(
-              data.notifications.slice(0, 5).map((n) => ({
+              data.notifications.map((n) => ({
                 id: n.id,
                 title: n.title,
                 description: n.description,
@@ -363,6 +364,11 @@ const Navbar = () => {
       href: "/ai-search",
       icon: Search,
       permission: { resource: "ai_search", action: "search" },
+    },
+    {
+      label: "AI Assistant",
+      href: "/assistant",
+      icon: MessageSquare,
     },
   ].filter(
     (link) =>

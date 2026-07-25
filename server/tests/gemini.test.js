@@ -1,9 +1,10 @@
-import request from "supertest";
+import request from "supertest"; // eslint-disable-line no-unused-vars
 import jwt from "jsonwebtoken";
 import mongoose from "mongoose";
 import axios from "axios";
 import { jest } from "@jest/globals";
-import { app } from "../server.js";
+import { app } from "../server.js"; // eslint-disable-line no-unused-vars
+import { createCsrfAgent, refreshCsrfToken } from "./helpers/csrfHelper.js"; // eslint-disable-line no-unused-vars
 import User from "../models/userModel.js";
 import Organization from "../models/organizationModel.js";
 import Membership from "../models/membershipModel.js";
@@ -91,8 +92,10 @@ describe("Gemini AI Endpoint Authentication and Authorization", () => {
 
   describe("POST /api/gemini/insights", () => {
     it("should reject unauthenticated requests with 401", async () => {
-      const res = await request(app)
+      const { agent, csrfToken } = await createCsrfAgent();
+      const res = await agent
         .post("/api/gemini/insights")
+        .set("X-CSRF-Token", csrfToken)
         .send({ summary: { totalMeetings: 5, activePolicies: 2 } });
 
       expect(res.statusCode).toEqual(401);
@@ -100,9 +103,11 @@ describe("Gemini AI Endpoint Authentication and Authorization", () => {
     });
 
     it("should reject unauthorized requests from guest with 403", async () => {
-      const res = await request(app)
+      const { agent, csrfToken } = await createCsrfAgent();
+      const res = await agent
         .post("/api/gemini/insights")
         .set("Authorization", `Bearer ${guestToken}`)
+        .set("X-CSRF-Token", csrfToken)
         .send({ summary: { totalMeetings: 5, activePolicies: 2 } });
 
       expect(res.statusCode).toEqual(403);
@@ -110,9 +115,11 @@ describe("Gemini AI Endpoint Authentication and Authorization", () => {
     });
 
     it("should allow authenticated member with view reports permission to generate insights", async () => {
-      const res = await request(app)
+      const { agent, csrfToken } = await createCsrfAgent();
+      const res = await agent
         .post("/api/gemini/insights")
         .set("Authorization", `Bearer ${userToken}`)
+        .set("X-CSRF-Token", csrfToken)
         .send({ summary: { totalMeetings: 5, activePolicies: 2 } });
 
       expect(res.statusCode).toEqual(200);

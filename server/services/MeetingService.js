@@ -12,19 +12,8 @@ import fs from "fs";
 import mongoose from "mongoose";
 import User from "../models/userModel.js";
 import Membership from "../models/membershipModel.js";
-import {
-  indexMeeting,
-  deleteMeetingFromPinecone,
-} from "../utils/embeddingUtils.js";
-import {
-  processStructuredMoM,
-  detectResolutions,
-} from "./knowledgeGraphService.js";
 import { captureSnapshot } from "./graphSnapshotService.js";
-import { checkMeetingDecisionsAgainstPolicies } from "./policyComplianceService.js";
 import eventBus from "./eventBus.js";
-import * as calendarService from "./calendarService.js";
-import { aiQueue } from "./queueService.js";
 import {
   NotFoundError,
   ValidationError,
@@ -33,14 +22,36 @@ import {
 
 // Imported specific services and utils
 import { validatePath } from "../utils/fileUtils.js";
-import { transcribeFile, transcribeAudioUrl } from "./TranscriptionService.js";
-import {
-  generateMoMWithAI,
-  normalizeMoM,
-  buildHumanReadableMoM,
-} from "./GenerativeAIService.js";
 import * as MeetingStorageService from "./MeetingStorageService.js";
 
+// AI / calendar / queue / transcription stacks are loaded on demand. Static
+// imports pull @xenova/transformers, axios diamonds, and related graphs into
+// MeetingService's eager ESM link graph and trigger "module is already linked"
+// under Jest's VM linker.
+const loadEmbeddingUtils = () => import("../utils/embeddingUtils.js");
+const loadKnowledgeGraph = () => import("./knowledgeGraphService.js");
+const loadPolicyCompliance = () => import("./policyComplianceService.js");
+const loadGenerativeAI = () => import("./GenerativeAIService.js");
+const loadCalendarService = () => import("./calendarService.js");
+const loadQueueService = () => import("./queueService.js");
+const loadTranscriptionService = () => import("./TranscriptionService.js");
+const scheduleIndexMeeting = (meeting) => {
+  loadEmbeddingUtils()
+    .then(({ indexMeeting }) => indexMeeting(meeting))
+    .catch((err) =>
+      console.error("⚠️ indexMeeting error (continuing):", err.message),
+    );
+};
+
+const scheduleDeleteFromPinecone = (meetingId) => {
+  loadEmbeddingUtils()
+    .then(({ deleteMeetingFromPinecone }) =>
+      deleteMeetingFromPinecone(meetingId),
+    )
+    .catch((err) =>
+      console.error("⚠️ Pinecone deletion error (continuing):", err.message),
+    );
+};
 export const isValidObjectId = (id) =>
   typeof id === "string" && mongoose.Types.ObjectId.isValid(id);
 
@@ -52,6 +63,11 @@ const _runKnowledgeGraph = (meetingDoc, mom) => {
   if (!meetingDoc) return;
   (async () => {
     try {
+      const [
+        { detectResolutions, processStructuredMoM },
+        { checkMeetingDecisionsAgainstPolicies },
+      ] = await Promise.all([loadKnowledgeGraph(), loadPolicyCompliance()]);
+
       await detectResolutions(meetingDoc, mom);
       const kgResults = await processStructuredMoM(meetingDoc, mom);
       try {
@@ -116,9 +132,7 @@ export const createMeeting = async (uploaderId, orgId, data) => {
     status: "uploaded",
   });
 
-  indexMeeting(meeting).catch((err) =>
-    console.error("⚠️ indexMeeting error (continuing):", err.message),
-  );
+  scheduleIndexMeeting(meeting);
 
   if (orgId) {
     Membership.find({
@@ -138,19 +152,44 @@ export const createMeeting = async (uploaderId, orgId, data) => {
       );
   }
 
-  User.findById(uploaderId)
-    .then(async (user) => {
-      if (user?.calendarSyncEnabled) {
-        const eventId = await calendarService.createEvent(user, meeting);
-        if (eventId) {
-          meeting.googleEventId = eventId;
-          await meeting.save();
-        }
+  // Sync with connected calendars (Google and Microsoft)
+  (async () => {
+    try {
+      const calendarService = await loadCalendarService();
+
+      // Sync with Google Calendar
+      const googleEventId = await calendarService.createGoogleEvent(
+        uploaderId,
+        meeting,
+      );
+      if (googleEventId) {
+        meeting.calendarEvents = meeting.calendarEvents || {};
+        meeting.calendarEvents.google = {
+          eventId: googleEventId,
+          syncedAt: new Date(),
+        };
+        // Update legacy field for backward compatibility
+        meeting.googleEventId = googleEventId;
+        await meeting.save();
       }
-    })
-    .catch((err) =>
-      console.error("⚠️ Google Calendar sync error (continuing):", err.message),
-    );
+
+      // Sync with Microsoft Calendar
+      const microsoftEventId = await calendarService.createMicrosoftEvent(
+        uploaderId,
+        meeting,
+      );
+      if (microsoftEventId) {
+        meeting.calendarEvents = meeting.calendarEvents || {};
+        meeting.calendarEvents.microsoft = {
+          eventId: microsoftEventId,
+          syncedAt: new Date(),
+        };
+        await meeting.save();
+      }
+    } catch (err) {
+      console.error("⚠️ Calendar sync error (continuing):", err.message);
+    }
+  })();
 
   try {
     eventBus.emit("meeting.created", meeting);
@@ -170,6 +209,7 @@ export const uploadAndTranscribeMeeting = async (
   const filePath = file.path;
   console.log("🎙️ Starting transcription...");
 
+  const { transcribeFile } = await loadTranscriptionService();
   const transcriptText = await transcribeFile(filePath);
   console.log("✅ Transcription completed");
 
@@ -186,9 +226,7 @@ export const uploadAndTranscribeMeeting = async (
     status: "completed",
   });
 
-  indexMeeting(meeting).catch((err) =>
-    console.error("⚠️ indexMeeting error (continuing):", err.message),
-  );
+  scheduleIndexMeeting(meeting);
 
   try {
     fs.unlinkSync(validatePath(filePath));
@@ -220,6 +258,7 @@ export const uploadAudioForExistingMeeting = async (
   const filePath = file.path;
   console.log("🎙️ Transcribing audio for existing meeting...");
 
+  const { transcribeFile } = await loadTranscriptionService();
   const transcriptText = await transcribeFile(filePath);
   console.log("✅ Transcription completed");
 
@@ -228,9 +267,7 @@ export const uploadAudioForExistingMeeting = async (
   meeting.status = "completed";
   await meeting.save();
 
-  indexMeeting(meeting).catch((err) =>
-    console.error("⚠️ indexMeeting error (continuing):", err.message),
-  );
+  scheduleIndexMeeting(meeting);
 
   try {
     fs.unlinkSync(validatePath(filePath));
@@ -286,22 +323,35 @@ export const generateMeetingMoM = async (
     throw new ValidationError("No transcript provided.");
   }
 
+  const { aiQueue } = await loadQueueService();
   if (aiQueue && aiQueue.isActive) {
     console.log(
       `🚀 Queueing MoM generation job for ${meetingId || "transcript-only"}...`,
     );
-    await aiQueue.add("generate-mom", {
-      meetingId,
-      transcript: textToSummarize,
-      date,
-      title,
-      userId,
-    });
+    await aiQueue.add(
+      "generate-mom",
+      {
+        meetingId,
+        transcript: textToSummarize,
+        date,
+        title,
+        userId,
+      },
+      {
+        attempts: 3,
+        backoff: {
+          type: "exponential",
+          delay: 5000, // Wait 5s, then 10s on retries
+        },
+      },
+    );
     return { queued: true };
   }
 
   console.log(`🧠 Generating MoM for ${meetingId || "transcript-only"}...`);
 
+  const { generateMoMWithAI, normalizeMoM, buildHumanReadableMoM } =
+    await loadGenerativeAI();
   const structured = await generateMoMWithAI(textToSummarize, date, title);
   if (!structured) throw new Error("No summary generated");
 
@@ -325,6 +375,7 @@ export const generateMeetingMoM = async (
       structuredMoM: mom,
       status: "completed",
     });
+    const { indexMeeting } = await loadEmbeddingUtils();
     await indexMeeting(meetingToUpdate);
   } else if (meetingToUpdate) {
     meetingToUpdate.title = mom.title;
@@ -454,21 +505,33 @@ export const updateMeeting = async (userId, meetingId, data, doc = null) => {
     console.error("⚠️ Failed to emit meeting.updated event:", evtErr.message);
   }
 
-  indexMeeting(meeting).catch((err) =>
-    console.error("⚠️ indexMeeting error (continuing):", err.message),
-  );
+  scheduleIndexMeeting(meeting);
 
-  if (meeting.googleEventId) {
-    User.findById(userId)
-      .then(async (user) => {
-        if (user?.calendarSyncEnabled) {
-          await calendarService.updateEvent(user, meeting);
-        }
-      })
-      .catch((err) =>
-        console.error("⚠️ Google Calendar update sync error:", err.message),
-      );
-  }
+  // Sync updates with connected calendars
+  (async () => {
+    try {
+      const calendarService = await loadCalendarService();
+
+      // Update Google Calendar event
+      if (meeting.calendarEvents?.google?.eventId) {
+        await calendarService.updateGoogleEvent(
+          userId,
+          meeting,
+          meeting.calendarEvents.google.eventId,
+        );
+      }
+      // Update Microsoft Calendar event
+      if (meeting.calendarEvents?.microsoft?.eventId) {
+        await calendarService.updateMicrosoftEvent(
+          userId,
+          meeting,
+          meeting.calendarEvents.microsoft.eventId,
+        );
+      }
+    } catch (err) {
+      console.error("⚠️ Calendar update sync error:", err.message);
+    }
+  })();
 
   return meeting;
 };
@@ -477,7 +540,9 @@ export const deleteMeeting = async (doc, meetingId) => {
   let deleted;
 
   if (doc) {
-    const googleEventId = doc.googleEventId;
+    const googleEventId =
+      doc.calendarEvents?.google?.eventId || doc.googleEventId;
+    const microsoftEventId = doc.calendarEvents?.microsoft?.eventId;
     const uploadedBy = doc.uploadedBy;
     const meetingIdToDelete = doc._id.toString();
     await doc.deleteOne();
@@ -489,21 +554,25 @@ export const deleteMeeting = async (doc, meetingId) => {
     }
 
     // Delete from Pinecone (fire-and-forget)
-    deleteMeetingFromPinecone(meetingIdToDelete).catch((err) =>
-      console.error("⚠️ Pinecone deletion error (continuing):", err.message),
-    );
+    scheduleDeleteFromPinecone(meetingIdToDelete);
 
-    if (googleEventId) {
-      User.findById(uploadedBy)
-        .then(async (user) => {
-          if (user?.calendarSyncEnabled) {
-            await calendarService.deleteEvent(user, googleEventId);
-          }
-        })
-        .catch((err) =>
-          console.error("⚠️ Calendar delete sync error:", err.message),
-        );
-    }
+    // Delete from connected calendars
+    (async () => {
+      try {
+        const calendarService = await loadCalendarService();
+        if (googleEventId) {
+          await calendarService.deleteGoogleEvent(uploadedBy, googleEventId);
+        }
+        if (microsoftEventId) {
+          await calendarService.deleteMicrosoftEvent(
+            uploadedBy,
+            microsoftEventId,
+          );
+        }
+      } catch (err) {
+        console.error("⚠️ Calendar delete sync error:", err.message);
+      }
+    })();
     return;
   }
 
@@ -521,21 +590,31 @@ export const deleteMeeting = async (doc, meetingId) => {
   }
 
   // Delete from Pinecone (fire-and-forget)
-  deleteMeetingFromPinecone(meetingId).catch((err) =>
-    console.error("⚠️ Pinecone deletion error (continuing):", err.message),
-  );
+  scheduleDeleteFromPinecone(meetingId);
 
-  if (deleted.googleEventId) {
-    User.findById(deleted.uploadedBy)
-      .then(async (user) => {
-        if (user?.calendarSyncEnabled) {
-          await calendarService.deleteEvent(user, deleted.googleEventId);
-        }
-      })
-      .catch((err) =>
-        console.error("⚠️ Calendar delete sync error:", err.message),
-      );
-  }
+  // Delete from connected calendars
+  (async () => {
+    try {
+      const calendarService = await loadCalendarService();
+      const googleEventId =
+        deleted.calendarEvents?.google?.eventId || deleted.googleEventId;
+      const microsoftEventId = deleted.calendarEvents?.microsoft?.eventId;
+      if (googleEventId) {
+        await calendarService.deleteGoogleEvent(
+          deleted.uploadedBy,
+          googleEventId,
+        );
+      }
+      if (microsoftEventId) {
+        await calendarService.deleteMicrosoftEvent(
+          deleted.uploadedBy,
+          microsoftEventId,
+        );
+      }
+    } catch (err) {
+      console.error("⚠️ Calendar delete sync error:", err.message);
+    }
+  })();
 };
 
 export const archiveMeeting = async (meetingId) => {
@@ -575,6 +654,7 @@ export const searchMeetings = async (
 
   if (audioUrl && !searchQuery) {
     console.log("🎧 Transcribing audioUrl for voice search...");
+    const { transcribeAudioUrl } = await loadTranscriptionService();
     searchQuery = await transcribeAudioUrl(audioUrl);
     console.log("🔊 Voice transcribed to text:", searchQuery);
   }

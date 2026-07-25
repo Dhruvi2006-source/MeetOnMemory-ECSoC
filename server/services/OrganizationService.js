@@ -7,6 +7,7 @@
 import Organization from "../models/organizationModel.js";
 import userModel from "../models/userModel.js";
 import Membership from "../models/membershipModel.js";
+import MembershipRequest from "../models/membershipRequestModel.js";
 import eventBus from "./eventBus.js";
 import AuditService from "./AuditService.js";
 import mongoose from "mongoose";
@@ -39,14 +40,18 @@ const isValidObjectId = (id) => {
 /**
  * Whitelist allowed visibility values
  */
-const allowedVisibilities = ["public", "private"];
+const allowedVisibilities = ["public", "private", "invite-only"];
 const isValidVisibility = (visibility) =>
   allowedVisibilities.includes(visibility);
+
+const allowedJoinPolicies = ["open", "approval_required", "invite_only"];
+const isValidJoinPolicy = (joinPolicy) =>
+  allowedJoinPolicies.includes(joinPolicy);
 
 /**
  * Whitelist allowed role values
  */
-const allowedRoles = ["admin", "member"];
+const allowedRoles = ["admin", "member"]; // eslint-disable-line no-unused-vars
 
 /**
  * Generate a unique slug from organization name
@@ -61,6 +66,91 @@ const generateSlug = (name) => {
   return `${baseSlug}-${randomSuffix}`;
 };
 
+const isLegacyMember = (organization, userId) =>
+  Array.isArray(organization.members) &&
+  organization.members.some(
+    (member) => member.toString() === userId.toString(),
+  );
+
+const assertDirectJoinAllowed = (organization) => {
+  if (
+    organization.visibility === "invite-only" ||
+    organization.joinPolicy === "invite_only"
+  ) {
+    throw new ForbiddenError(
+      "This organization requires a valid invitation to join.",
+    );
+  }
+  if (organization.visibility !== "public") {
+    throw new ForbiddenError(
+      "This private organization requires invitation or membership approval.",
+    );
+  }
+  if (organization.joinPolicy === "approval_required") {
+    throw new ForbiddenError(
+      "This organization requires membership approval before joining.",
+    );
+  }
+};
+
+const joinOrganization = async (userId, organization) => {
+  const [membership, pendingRequest] = await Promise.all([
+    Membership.findOne({
+      user: userId,
+      organization: organization._id,
+      status: "active",
+    }),
+    MembershipRequest.findOne({
+      user: userId,
+      organization: organization._id,
+      status: "pending",
+    }),
+  ]);
+
+  if (membership || isLegacyMember(organization, userId)) {
+    await userModel.findByIdAndUpdate(userId, {
+      role: membership?.role || "member",
+      organization: organization._id,
+      hasCompletedOnboarding: true,
+    });
+    return { alreadyMember: true };
+  }
+
+  assertDirectJoinAllowed(organization);
+
+  if (pendingRequest) {
+    throw new ConflictError(
+      "A membership request for this organization is already pending.",
+    );
+  }
+
+  try {
+    await Membership.create({
+      user: userId,
+      organization: organization._id,
+      role: "member",
+      status: "active",
+    });
+  } catch (error) {
+    if (error.code === 11000) {
+      throw new ConflictError("You are already a member of this organization.");
+    }
+    throw error;
+  }
+
+  if (!Array.isArray(organization.members)) organization.members = [];
+  organization.members.push(userId);
+  await organization.save();
+
+  await userModel.findByIdAndUpdate(userId, {
+    role: "member",
+    organization: organization._id,
+    hasCompletedOnboarding: true,
+  });
+
+  return { alreadyMember: false };
+};
+
 // ═══════════════════════════════════════════════════════════════
 // Public service methods
 // ═══════════════════════════════════════════════════════════════
@@ -73,28 +163,16 @@ const generateSlug = (name) => {
  */
 export const createOrJoinOrganization = async (userId, orgName) => {
   // Check if organization already exists (case-insensitive match)
+  const escapedOrgName = escapeRegex(orgName);
   let organization = await Organization.findOne({
-    name: { $regex: `^${orgName}$`, $options: "i" },
+    name: { $regex: `^${escapedOrgName}$`, $options: "i" },
   });
 
   let message = "";
 
   if (organization) {
     // --- Join existing organization ---
-    const alreadyMember = organization.members.some(
-      (m) => m.toString() === userId.toString(),
-    );
-
-    if (!alreadyMember) {
-      organization.members.push(userId);
-      await organization.save();
-    }
-
-    await userModel.findByIdAndUpdate(userId, {
-      role: "member",
-      organization: organization._id,
-      hasCompletedOnboarding: true,
-    });
+    await joinOrganization(userId, organization);
 
     message = "Joined existing organization successfully.";
 
@@ -184,9 +262,10 @@ export const createOrJoinOrganization = async (userId, orgName) => {
  * Returns: { success: true, organizations: [...] }
  */
 export const getAllOrganizations = async () => {
-  const organizations = await Organization.find({}, "name _id").sort({
-    createdAt: -1,
-  });
+  const organizations = await Organization.find(
+    { visibility: "public" },
+    "name _id",
+  ).sort({ createdAt: -1 });
   return { success: true, organizations };
 };
 
@@ -207,21 +286,7 @@ export const joinOrganizationById = async (userId, organizationId) => {
     throw new NotFoundError("Organization not found.");
   }
 
-  const alreadyMember = organization.members.some(
-    (m) => m.toString() === userId.toString(),
-  );
-
-  if (!alreadyMember) {
-    organization.members.push(userId);
-    await organization.save();
-  }
-
-  // Update user to be a member of this organization
-  await userModel.findByIdAndUpdate(userId, {
-    role: "member",
-    organization: organization._id,
-    hasCompletedOnboarding: true,
-  });
+  await joinOrganization(userId, organization);
 
   const updatedUser = await userModel
     .findById(userId)
@@ -261,20 +326,16 @@ export const selectOrganization = async (userId, organizationId) => {
     throw new NotFoundError("Organization not found.");
   }
 
-  const isMember = organization.members.some(
-    (m) => m.toString() === userId.toString(),
-  );
-
-  if (!isMember) {
-    throw new ForbiddenError("You are not a member of this organization.");
-  }
-
   // Get user's membership role in the selected organization
   const membership = await Membership.findOne({
     user: userId,
     organization: organization._id,
     status: "active",
   });
+
+  if (!membership && !isLegacyMember(organization, userId)) {
+    throw new ForbiddenError("You are not a member of this organization.");
+  }
 
   const userRole = membership ? membership.role : "member";
 
@@ -543,7 +604,7 @@ export const getUserOrganizations = async (userId) => {
  */
 export const createOrganization = async (
   userId,
-  { name, description, logo, visibility, metadata },
+  { name, description, logo, visibility, joinPolicy, metadata },
 ) => {
   if (!name || !name.trim()) {
     throw new ValidationError("Organization name is required.");
@@ -551,9 +612,17 @@ export const createOrganization = async (
 
   const orgName = name.trim();
 
+  if (visibility && !isValidVisibility(visibility)) {
+    throw new ValidationError("Invalid visibility value.");
+  }
+  if (joinPolicy && !isValidJoinPolicy(joinPolicy)) {
+    throw new ValidationError("Invalid join policy.");
+  }
+
   // Check if organization with same name exists (case-insensitive)
+  const escapedOrgName = escapeRegex(orgName);
   const existingOrg = await Organization.findOne({
-    name: { $regex: `^${orgName}$`, $options: "i" },
+    name: { $regex: `^${escapedOrgName}$`, $options: "i" },
   });
 
   if (existingOrg) {
@@ -570,7 +639,9 @@ export const createOrganization = async (
     description: description || "",
     logo: logo || "",
     visibility: visibility || "private",
+    joinPolicy: joinPolicy || "open",
     owner: userId,
+    members: [userId],
     metadata: metadata || {},
   });
 
@@ -657,6 +728,7 @@ export const getOrganizationById = async (idOrSlug) => {
     : { slug: String(idOrSlug) };
 
   const organization = await Organization.findOne(query)
+    .select("name slug description logo visibility owner createdAt")
     .populate("owner", "name email")
     .lean();
 
@@ -724,10 +796,17 @@ export const updateOrganization = async (
   if (visibility && !isValidVisibility(visibility)) {
     throw new ValidationError("Invalid visibility value.");
   }
+  if (joinPolicy && !isValidJoinPolicy(joinPolicy)) {
+    throw new ValidationError("Invalid join policy.");
+  }
 
   const cleanVisibility =
     visibility && isValidVisibility(visibility)
       ? allowedVisibilities.find((v) => v === visibility)
+      : undefined;
+  const cleanJoinPolicy =
+    joinPolicy && isValidJoinPolicy(joinPolicy)
+      ? allowedJoinPolicies.find((policy) => policy === joinPolicy)
       : undefined;
 
   const organization = await Organization.findById(cleanId);
@@ -768,6 +847,7 @@ export const updateOrganization = async (
   if (logo !== undefined)
     organization.logo = String(logo).trim().substring(0, 500);
   if (cleanVisibility) organization.visibility = cleanVisibility;
+  if (cleanJoinPolicy) organization.joinPolicy = cleanJoinPolicy;
   if (metadata)
     organization.metadata = typeof metadata === "object" ? metadata : {};
 

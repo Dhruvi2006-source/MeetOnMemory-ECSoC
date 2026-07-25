@@ -15,10 +15,16 @@
 import fs from "fs";
 import path from "path";
 import { z } from "zod";
+import Meeting from "../models/meetingModel.js"; // eslint-disable-line no-unused-vars
 import * as MeetingService from "../services/MeetingService.js";
 import { ValidationError, UnauthorizedError } from "../utils/errors.js";
 import AuditService from "../services/AuditService.js";
 import { sendSuccess } from "../utils/responseHandler.js";
+
+const pushMeetingToIntegrations = (...args) =>
+  import("../services/calendarSyncService.js").then((mod) =>
+    mod.pushMeetingToIntegrations(...args),
+  );
 // ═══════════════════════════════════════════════════════════════
 // Zod validation schemas
 // ═══════════════════════════════════════════════════════════════
@@ -150,6 +156,10 @@ export const createMeeting = async (req, res, next) => {
       req.user?.organization || null,
       validated,
     );
+
+    if (req.body.syncToCalendar) {
+      pushMeetingToIntegrations(uploaderId, meeting).catch(console.error);
+    }
 
     return sendSuccess(
       res,
