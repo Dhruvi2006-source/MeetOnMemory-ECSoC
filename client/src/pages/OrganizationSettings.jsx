@@ -134,15 +134,27 @@ const OrganizationSettings = () => {
     }
 
     if (formData.contactEmail && formData.contactEmail.trim()) {
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
       if (!emailRegex.test(formData.contactEmail.trim())) {
         newErrors.contactEmail = "Please enter a valid email address.";
       }
     }
 
     if (formData.website && formData.website.trim()) {
-      const urlPattern = /^(https?:\/\/)?([\w-]+\.)+[\w-]+(\/.*)?$/i;
-      if (!urlPattern.test(formData.website.trim())) {
+      let isValidUrl = false;
+      try {
+        const parsedUrl = new URL(
+          formData.website.trim().includes("://")
+            ? formData.website.trim()
+            : `https://${formData.website.trim()}`,
+        );
+        isValidUrl =
+          (parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:") &&
+          parsedUrl.hostname.includes(".");
+      } catch {
+        isValidUrl = false;
+      }
+      if (!isValidUrl) {
         newErrors.website =
           "Please enter a valid website URL (e.g. https://example.com).";
       }

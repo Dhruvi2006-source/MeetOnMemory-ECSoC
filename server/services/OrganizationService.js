@@ -779,7 +779,7 @@ export const updateOrganization = async (
 
   // Validate email format if provided
   if (contactEmail && contactEmail.trim()) {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
     if (!emailRegex.test(contactEmail.trim())) {
       throw new ValidationError("Invalid contact email format.");
     }
@@ -787,8 +787,20 @@ export const updateOrganization = async (
 
   // Validate website URL format if provided
   if (website && website.trim()) {
-    const urlPattern = /^(https?:\/\/)?([\w-]+\.)+[\w-]+(\/.*)?$/i;
-    if (!urlPattern.test(website.trim())) {
+    let isValidUrl = false;
+    try {
+      const parsedUrl = new URL(
+        website.trim().includes("://")
+          ? website.trim()
+          : `https://${website.trim()}`,
+      );
+      isValidUrl =
+        (parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:") &&
+        parsedUrl.hostname.includes(".");
+    } catch {
+      isValidUrl = false;
+    }
+    if (!isValidUrl) {
       throw new ValidationError("Invalid website URL format.");
     }
   }
