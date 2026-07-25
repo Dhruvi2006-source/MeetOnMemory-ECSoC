@@ -664,7 +664,19 @@ export const getOrganizationById = async (idOrSlug) => {
     throw new NotFoundError("Organization not found.");
   }
 
-  return { success: true, organization };
+  const memberCount = await Membership.countDocuments({
+    organization: organization._id,
+    status: "active",
+  });
+
+  return {
+    success: true,
+    organization: {
+      ...organization,
+      memberCount:
+        memberCount || (organization.members ? organization.members.length : 0),
+    },
+  };
 };
 
 /**
@@ -673,13 +685,40 @@ export const getOrganizationById = async (idOrSlug) => {
 export const updateOrganization = async (
   userId,
   id,
-  { name, description, logo, visibility, metadata },
+  {
+    name,
+    description,
+    about,
+    website,
+    contactEmail,
+    industry,
+    location,
+    logo,
+    visibility,
+    metadata,
+  },
 ) => {
   if (!isValidObjectId(id)) {
     throw new ValidationError("Invalid organization ID.");
   }
 
   const cleanId = new mongoose.Types.ObjectId(String(id));
+
+  // Validate email format if provided
+  if (contactEmail && contactEmail.trim()) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(contactEmail.trim())) {
+      throw new ValidationError("Invalid contact email format.");
+    }
+  }
+
+  // Validate website URL format if provided
+  if (website && website.trim()) {
+    const urlPattern = /^(https?:\/\/)?([\w-]+\.)+[\w-]+(\/.*)?$/i;
+    if (!urlPattern.test(website.trim())) {
+      throw new ValidationError("Invalid website URL format.");
+    }
+  }
 
   // Validate visibility if provided
   if (visibility && !isValidVisibility(visibility)) {
@@ -713,6 +752,19 @@ export const updateOrganization = async (
   if (name) organization.name = String(name).trim().substring(0, 100);
   if (description !== undefined)
     organization.description = String(description).trim().substring(0, 500);
+  if (about !== undefined)
+    organization.about = String(about).trim().substring(0, 2000);
+  if (website !== undefined)
+    organization.website = String(website).trim().substring(0, 300);
+  if (contactEmail !== undefined)
+    organization.contactEmail = String(contactEmail)
+      .trim()
+      .toLowerCase()
+      .substring(0, 100);
+  if (industry !== undefined)
+    organization.industry = String(industry).trim().substring(0, 100);
+  if (location !== undefined)
+    organization.location = String(location).trim().substring(0, 100);
   if (logo !== undefined)
     organization.logo = String(logo).trim().substring(0, 500);
   if (cleanVisibility) organization.visibility = cleanVisibility;

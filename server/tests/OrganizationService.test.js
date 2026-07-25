@@ -1,6 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock all external dependencies before importing the service
+vi.mock("mongoose", () => {
+  function MockObjectId(id) {
+    this.id = id;
+    this.toString = () => id;
+  }
+  MockObjectId.isValid = (id) => typeof id === "string" && id.length === 24;
+  return {
+    default: {
+      Types: {
+        ObjectId: MockObjectId,
+      },
+    },
+  };
+});
 vi.mock("../models/organizationModel.js", () => ({
   default: {
     findOne: vi.fn(),
@@ -251,10 +265,16 @@ describe("OrganizationService", () => {
       ).rejects.toThrow("Not authorized to update this organization.");
     });
 
-    it("should update and save when authorized", async () => {
+    it("should update and save all organization settings when authorized", async () => {
       const mockOrg = {
         _id: "org1",
         name: "Old Name",
+        description: "Old Desc",
+        about: "",
+        website: "",
+        contactEmail: "",
+        industry: "",
+        location: "",
         owner: { toString: () => "ownerUser" },
         save: vi.fn().mockResolvedValue(true),
       };
@@ -266,12 +286,44 @@ describe("OrganizationService", () => {
       const result = await OrganizationService.updateOrganization(
         "ownerUser",
         "507f1f77bcf86cd799439011",
-        { name: "New Name" },
+        {
+          name: "New Name",
+          about: "New About Bio",
+          website: "https://acme.org",
+          contactEmail: "contact@acme.org",
+          industry: "Technology",
+          location: "New York, NY",
+        },
       );
 
       expect(result.success).toBe(true);
       expect(mockOrg.name).toBe("New Name");
+      expect(mockOrg.about).toBe("New About Bio");
+      expect(mockOrg.website).toBe("https://acme.org");
+      expect(mockOrg.contactEmail).toBe("contact@acme.org");
+      expect(mockOrg.industry).toBe("Technology");
+      expect(mockOrg.location).toBe("New York, NY");
       expect(mockOrg.save).toHaveBeenCalled();
+    });
+
+    it("should throw ValidationError for invalid contactEmail", async () => {
+      await expect(
+        OrganizationService.updateOrganization(
+          "ownerUser",
+          "507f1f77bcf86cd799439011",
+          { contactEmail: "invalid-email" },
+        ),
+      ).rejects.toThrow("Invalid contact email format.");
+    });
+
+    it("should throw ValidationError for invalid website URL", async () => {
+      await expect(
+        OrganizationService.updateOrganization(
+          "ownerUser",
+          "507f1f77bcf86cd799439011",
+          { website: "not a url" },
+        ),
+      ).rejects.toThrow("Invalid website URL format.");
     });
   });
 

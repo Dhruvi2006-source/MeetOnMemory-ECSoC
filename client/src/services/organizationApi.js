@@ -15,4 +15,8 @@ export const organizationApi = {
     apiClient.get("/api/organizations/browse", { params }),
   searchOrganizations: (params) =>
     apiClient.get("/api/organizations/search", { params }),
+  getOrganizationById: (idOrSlug) =>
+    apiClient.get(`/api/organizations/${idOrSlug}`),
+  updateOrganization: (id, data) =>
+    apiClient.put(`/api/organizations/${id}`, data),
 };

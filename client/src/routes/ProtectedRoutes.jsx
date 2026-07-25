@@ -7,6 +7,7 @@ import AccessDenied from "../pages/AccessDenied.jsx";
 // --- Protected Pages ---
 import MeetingListPage from "../pages/MeetingListPage.jsx";
 import OrganizationHub from "../pages/OrganizationHub.jsx";
+import OrganizationSettings from "../pages/OrganizationSettings.jsx";
 import JoinOrganizationPage from "../pages/JoinOrganizationPage.jsx";
 import CreateOrganizationPage from "../pages/CreateOrganizationPage.jsx";
 import BrowseOrganizations from "../pages/BrowseOrganizations/BrowseOrganizations.jsx";
@@ -73,6 +74,22 @@ const ProtectedRoutes = (
       element={
         <ProtectedRoute>
           <OrganizationHub />
+        </ProtectedRoute>
+      }
+    />
+    <Route
+      path="/organization/settings"
+      element={
+        <ProtectedRoute resource="organizations" action="view">
+          <OrganizationSettings />
+        </ProtectedRoute>
+      }
+    />
+    <Route
+      path="/organization-settings"
+      element={
+        <ProtectedRoute resource="organizations" action="view">
+          <OrganizationSettings />
         </ProtectedRoute>
       }
     />
