@@ -767,6 +767,7 @@ export const updateOrganization = async (
     location,
     logo,
     visibility,
+    joinPolicy,
     metadata,
   },
 ) => {
